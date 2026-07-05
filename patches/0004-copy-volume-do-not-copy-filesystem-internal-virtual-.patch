@@ -1,0 +1,36 @@
+From 2743de09985fa53431ba0bdc425b4ced612fed2b Mon Sep 17 00:00:00 2001
+From: Julius Arkenberg <julius@rkenberg.de>
+Date: Sun, 5 Jul 2026 22:04:14 +0200
+Subject: [PATCH 4/4] copy volume: do not copy filesystem-internal virtual
+ xattrs
+
+bcachefs exposes its per-inode IO path options (compression, target
+devices, ...) as virtual xattrs in the 'bcachefs.' and
+'bcachefs_effective.' namespaces, which show up in listxattr and thus
+get picked up by rsync -X. Applying them on any other filesystem fails
+with EOPNOTSUPP and aborts the volume copy (rsync exit code 23),
+breaking move-volume from bcachefs-backed directory storages to
+anything else.
+---
+ src/PVE/LXC.pm | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/PVE/LXC.pm b/src/PVE/LXC.pm
+index 0d5a303..1f202ee 100644
+--- a/src/PVE/LXC.pm
++++ b/src/PVE/LXC.pm
+@@ -3370,6 +3370,11 @@ my $copy_volume = sub {
+             'rsync',
+             '--stats',
+             '-X',
++            # filesystem-internal virtual xattrs (bcachefs exposes its
++            # per-inode IO options this way) cannot be set on other file
++            # systems and abort the transfer with EOPNOTSUPP on the target
++            '--filter=-x bcachefs.*',
++            '--filter=-x bcachefs_effective.*',
+             '-A',
+             '--numeric-ids',
+             '-aH',
+-- 
+2.54.0
+

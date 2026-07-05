@@ -1,7 +1,7 @@
 From 13d8625d0ecbecd4694db3fd877993a58ed1f983 Mon Sep 17 00:00:00 2001
 From: Julius Arkenberg <julius@rkenberg.de>
 Date: Sun, 5 Jul 2026 20:21:31 +0200
-Subject: [PATCH 3/3] api: move_volume: add 'with-snapshots' option
+Subject: [PATCH 3/4] api: move_volume: add 'with-snapshots' option
 
 Until now, moving a container volume to a different storage always
 stranded its snapshot history: move-volume refused --delete when

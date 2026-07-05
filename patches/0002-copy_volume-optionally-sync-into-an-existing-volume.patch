@@ -1,7 +1,7 @@
 From 6a5aed96f4c62ec69ea4e52a7732a4218e32e611 Mon Sep 17 00:00:00 2001
 From: Julius Arkenberg <julius@rkenberg.de>
 Date: Sun, 5 Jul 2026 20:18:38 +0200
-Subject: [PATCH 2/3] copy_volume: optionally sync into an existing volume
+Subject: [PATCH 2/4] copy_volume: optionally sync into an existing volume
 
 Add an optional $reuse_volid parameter to copy_volume(). When set, no
 new volume is allocated; the source state (optionally at a snapshot) is
