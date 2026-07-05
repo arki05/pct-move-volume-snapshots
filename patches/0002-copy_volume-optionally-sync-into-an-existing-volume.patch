@@ -1,0 +1,118 @@
+From 6a5aed96f4c62ec69ea4e52a7732a4218e32e611 Mon Sep 17 00:00:00 2001
+From: Julius Arkenberg <julius@rkenberg.de>
+Date: Sun, 5 Jul 2026 20:18:38 +0200
+Subject: [PATCH 2/3] copy_volume: optionally sync into an existing volume
+
+Add an optional $reuse_volid parameter to copy_volume(). When set, no
+new volume is allocated; the source state (optionally at a snapshot) is
+rsynced into the given volume with --delete, bringing it exactly to the
+source's state.
+
+This is the building block for snapshot-preserving volume moves, which
+need to bring one target volume through a sequence of source states.
+
+No functional change for existing callers.
+---
+ src/PVE/LXC.pm | 44 ++++++++++++++++++++++++++++----------------
+ 1 file changed, 28 insertions(+), 16 deletions(-)
+
+diff --git a/src/PVE/LXC.pm b/src/PVE/LXC.pm
+index 61f7328..0d5a303 100644
+--- a/src/PVE/LXC.pm
++++ b/src/PVE/LXC.pm
+@@ -3345,6 +3345,7 @@ my $copy_volume = sub {
+         $bwlimit,
+         $root_uid,
+         $root_gid,
++        $update,
+     ) = @_;
+ 
+     my $src_mp = { volume => $src_volid, mp => '/', ro => 1 };
+@@ -3365,7 +3366,7 @@ my $copy_volume = sub {
+ 
+         $bwlimit //= 0;
+ 
+-        run_command([
++        my $cmd = [
+             'rsync',
+             '--stats',
+             '-X',
+@@ -3376,9 +3377,13 @@ my $copy_volume = sub {
+             '--sparse',
+             '--one-file-system',
+             "--bwlimit=$bwlimit",
+-            "$src/",
+-            $dest,
+-        ]);
++        ];
++        # when updating a volume that already has contents, files deleted in
++        # the source since the last pass must be removed from the target
++        push $cmd->@*, '--delete' if $update;
++        push $cmd->@*, "$src/", $dest;
++
++        run_command($cmd);
+     };
+     my $err = $@;
+ 
+@@ -3402,8 +3407,11 @@ my $copy_volume = sub {
+ };
+ 
+ # Should not be called after unsharing the mount namespace!
++# If $reuse_volid is set, no new volume is allocated - the source (at
++# $snapname, if set) is synced into the given existing volume instead,
++# removing files that are not present in the source.
+ sub copy_volume {
+-    my ($mp, $vmid, $storage, $storage_cfg, $conf, $snapname, $bwlimit) = @_;
++    my ($mp, $vmid, $storage, $storage_cfg, $conf, $snapname, $bwlimit, $reuse_volid) = @_;
+ 
+     die "cannot copy volumes of type $mp->{type}\n" if $mp->{type} ne 'volume';
+     File::Path::make_path("/var/lib/lxc/$vmid");
+@@ -3416,17 +3424,20 @@ sub copy_volume {
+     # Allocate the disk before unsharing in order to make sure zfs subvolumes
+     # are visible in this namespace, otherwise the host only sees the empty
+     # (not-mounted) directory.
+-    my $new_volid;
++    my $new_volid = $reuse_volid;
+     eval {
+-        # Make sure $mp contains a correct size.
+-        $mp->{size} = PVE::Storage::volume_size_info($storage_cfg, $mp->{volume});
+-        my $needs_chown;
+-        ($new_volid, $needs_chown) =
+-            alloc_disk($storage_cfg, $vmid, $storage, $mp->{size} / 1024, $root_uid, $root_gid);
+-        if ($needs_chown) {
+-            PVE::Storage::activate_volumes($storage_cfg, [$new_volid], undef);
+-            my $path = PVE::Storage::path($storage_cfg, $new_volid, undef);
+-            chown($root_uid, $root_gid, $path);
++        if (!$reuse_volid) {
++            # Make sure $mp contains a correct size.
++            $mp->{size} = PVE::Storage::volume_size_info($storage_cfg, $mp->{volume});
++            my $needs_chown;
++            ($new_volid, $needs_chown) = alloc_disk(
++                $storage_cfg, $vmid, $storage, $mp->{size} / 1024, $root_uid, $root_gid,
++            );
++            if ($needs_chown) {
++                PVE::Storage::activate_volumes($storage_cfg, [$new_volid], undef);
++                my $path = PVE::Storage::path($storage_cfg, $new_volid, undef);
++                chown($root_uid, $root_gid, $path);
++            }
+         }
+ 
+         run_unshared(sub {
+@@ -3440,12 +3451,13 @@ sub copy_volume {
+                 $bwlimit,
+                 $root_uid,
+                 $root_gid,
++                defined($reuse_volid),
+             );
+         });
+     };
+     if (my $err = $@) {
+         PVE::Storage::vdisk_free($storage_cfg, $new_volid)
+-            if defined($new_volid);
++            if defined($new_volid) && !$reuse_volid;
+         die $err;
+     }
+ 
+-- 
+2.54.0
+

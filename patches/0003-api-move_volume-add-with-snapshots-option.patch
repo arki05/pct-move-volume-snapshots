@@ -1,0 +1,311 @@
+From 13d8625d0ecbecd4694db3fd877993a58ed1f983 Mon Sep 17 00:00:00 2001
+From: Julius Arkenberg <julius@rkenberg.de>
+Date: Sun, 5 Jul 2026 20:21:31 +0200
+Subject: [PATCH 3/3] api: move_volume: add 'with-snapshots' option
+
+Until now, moving a container volume to a different storage always
+stranded its snapshot history: move-volume refused --delete when
+snapshots reference the volume and otherwise left the old volume
+(with all snapshots) behind as an unused volume.
+
+With --with-snapshots, the volume's snapshots are replayed on the new
+volume, oldest first: the new volume is brought to each snapshot's
+state via the copy_volume update mode and snapshotted there under the
+same name, ending with a final sync of the current state. The
+container's snapshot config sections are then updated to reference the
+new volume, so the complete history moves along and the source volume
+may be deleted.
+
+This is storage-agnostic by construction: any source whose snapshots
+can be mounted, any target whose volumes support snapshots (checked,
+with a clean error otherwise). Content fidelity per snapshot is
+guaranteed by mounting each source snapshot directly; replay order is
+by snaptime, which is sufficient since each snapshot's content is
+self-contained (parent relations may form a tree after rollbacks).
+
+The new volume is not referenced by the config until the final config
+rewrite, so failures during replay simply free it, leaving the source
+untouched.
+---
+ src/PVE/API2/LXC.pm                 | 80 +++++++++++++++++++++++++++--
+ src/PVE/LXC/Config.pm               | 23 +++++++++
+ src/test/Makefile                   |  5 +-
+ src/test/run_snapshot_list_tests.pl | 76 +++++++++++++++++++++++++++
+ 4 files changed, 180 insertions(+), 4 deletions(-)
+ create mode 100755 src/test/run_snapshot_list_tests.pl
+
+diff --git a/src/PVE/API2/LXC.pm b/src/PVE/API2/LXC.pm
+index 88067dd..d679bc1 100644
+--- a/src/PVE/API2/LXC.pm
++++ b/src/PVE/API2/LXC.pm
+@@ -2556,6 +2556,15 @@ __PACKAGE__->register_method({
+                 maxLength => 40,
+                 optional => 1,
+             },
++            'with-snapshots' => {
++                type => 'boolean',
++                description => "Also move all snapshots of the volume by replaying them"
++                    . " on the target storage in order and updating the container's"
++                    . " snapshot configuration. Requires the target storage to support"
++                    . " snapshots. Only valid together with 'storage'.",
++                optional => 1,
++                default => 0,
++            },
+         },
+     },
+     returns => {
+@@ -2582,6 +2591,8 @@ __PACKAGE__->register_method({
+ 
+         my $target_digest = extract_param($param, 'target-digest');
+ 
++        my $with_snapshots = extract_param($param, 'with-snapshots');
++
+         my $lockname = 'disk';
+ 
+         my ($mpdata, $old_volid);
+@@ -2589,6 +2600,9 @@ __PACKAGE__->register_method({
+         die "either set storage or target-vmid, but not both\n"
+             if $storage && $target_vmid;
+ 
++        die "'with-snapshots' requires a target storage\n"
++            if $with_snapshots && !$storage;
++
+         my $storecfg = PVE::Storage::config();
+ 
+         my $move_to_storage_checks = sub {
+@@ -2612,6 +2626,7 @@ __PACKAGE__->register_method({
+ 
+                     die "you can't move a volume with snapshots and delete the source\n"
+                         if $param->{delete}
++                        && !$with_snapshots
+                         && PVE::LXC::Config->is_volume_in_use_by_snapshots($conf, $old_volid);
+ 
+                     PVE::Tools::assert_if_modified($digest, $conf->{digest});
+@@ -2634,6 +2649,11 @@ __PACKAGE__->register_method({
+ 
+                 my $new_volid;
+ 
++                my @replay_snaps;
++                @replay_snaps =
++                    PVE::LXC::Config->snapshot_list_for_volume($conf, $mpkey, $old_volid)
++                    if $with_snapshots;
++
+                 eval {
+                     PVE::Storage::activate_volumes($storage_cfg, [$old_volid]);
+                     my $bwlimit = extract_param($param, 'bwlimit');
+@@ -2641,9 +2661,46 @@ __PACKAGE__->register_method({
+                     my $movelimit = PVE::Storage::get_bandwidth_limit(
+                         'move', [$source_storage, $storage], $bwlimit,
+                     );
+-                    $new_volid = PVE::LXC::copy_volume(
+-                        $mpdata, $vmid, $storage, $storage_cfg, $conf, undef, $movelimit,
+-                    );
++                    if (@replay_snaps) {
++                        # allocate the new volume up front (empty), so snapshot
++                        # support can be verified before any data is copied
++                        my $size = PVE::Storage::volume_size_info($storage_cfg, $old_volid);
++                        my (undef, $root_uid, $root_gid) = PVE::LXC::parse_id_maps($conf);
++                        (my $needs_chown);
++                        ($new_volid, $needs_chown) = PVE::LXC::alloc_disk(
++                            $storage_cfg, $vmid, $storage, $size / 1024, $root_uid, $root_gid,
++                        );
++                        if ($needs_chown) {
++                            PVE::Storage::activate_volumes($storage_cfg, [$new_volid], undef);
++                            my $path = PVE::Storage::path($storage_cfg, $new_volid, undef);
++                            chown($root_uid, $root_gid, $path);
++                        }
++                        die "storage '$storage' does not support snapshots for the"
++                            . " new volume, cannot preserve them\n"
++                            if !PVE::Storage::volume_has_feature(
++                                $storage_cfg, 'snapshot', $new_volid,
++                            );
++
++                        # replay the snapshots in order: bring the new volume to
++                        # each snapshot's state, snapshot it there, finally sync
++                        # the current state
++                        for my $snap (@replay_snaps) {
++                            PVE::LXC::copy_volume(
++                                $mpdata, $vmid, $storage, $storage_cfg, $conf,
++                                $snap, $movelimit, $new_volid,
++                            );
++                            PVE::Storage::volume_snapshot($storage_cfg, $new_volid, $snap);
++                            print "replayed snapshot '$snap'\n";
++                        }
++                        PVE::LXC::copy_volume(
++                            $mpdata, $vmid, $storage, $storage_cfg, $conf,
++                            undef, $movelimit, $new_volid,
++                        );
++                    } else {
++                        $new_volid = PVE::LXC::copy_volume(
++                            $mpdata, $vmid, $storage, $storage_cfg, $conf, undef, $movelimit,
++                        );
++                    }
+                     if (PVE::LXC::Config->is_template($conf)) {
+                         PVE::Storage::activate_volumes($storage_cfg, [$new_volid]);
+                         my $template_volid =
+@@ -2664,6 +2721,23 @@ __PACKAGE__->register_method({
+                                 $mpdata, $mpkey eq 'rootfs',
+                             );
+ 
++                            # replayed snapshots now exist on the new volume, so
++                            # point their config sections at it
++                            for my $snap (@replay_snaps) {
++                                my $snap_conf = $conf->{snapshots}->{$snap} or next;
++                                my $snap_mp = eval {
++                                    PVE::LXC::Config->parse_volume($mpkey, $snap_conf->{$mpkey});
++                                };
++                                next
++                                    if !$snap_mp
++                                    || ($snap_mp->{type} // '') ne 'volume'
++                                    || $snap_mp->{volume} ne $old_volid;
++                                $snap_mp->{volume} = $new_volid;
++                                $snap_conf->{$mpkey} = PVE::LXC::Config->print_ct_mountpoint(
++                                    $snap_mp, $mpkey eq 'rootfs',
++                                );
++                            }
++
+                             PVE::LXC::Config->add_unused_volume($conf, $old_volid)
+                                 if !$param->{delete};
+ 
+diff --git a/src/PVE/LXC/Config.pm b/src/PVE/LXC/Config.pm
+index 7c81834..bbd67c0 100644
+--- a/src/PVE/LXC/Config.pm
++++ b/src/PVE/LXC/Config.pm
+@@ -1973,6 +1973,29 @@ sub is_volume_in_use_by_snapshots {
+     return 0;
+ }
+ 
++# Returns the names of all snapshots in which the given config key references
++# the given volume, ordered by snapshot time, oldest first (falling back to
++# the name for a stable order). The result is ordered purely by time,
++# deliberately ignoring the parent relation - rollbacks can turn the snapshot
++# history into a tree, but as each snapshot's content is self-contained, time
++# order is sufficient for replaying them.
++sub snapshot_list_for_volume {
++    my ($class, $config, $mpkey, $volid) = @_;
++
++    my $snapshots = $config->{snapshots} // {};
++
++    my @found;
++    for my $snap (keys %$snapshots) {
++        my $value = $snapshots->{$snap}->{$mpkey} or next;
++        my $mp = eval { $class->parse_volume($mpkey, $value) };
++        next if !$mp || ($mp->{type} // '') ne 'volume' || $mp->{volume} ne $volid;
++        push @found, $snap;
++    }
++
++    my $time = sub { $snapshots->{$_[0]}->{snaptime} // 0 };
++    return sort { $time->($a) <=> $time->($b) || $a cmp $b } @found;
++}
++
+ sub is_volume_in_use {
+     my ($class, $config, $volid, $include_snapshots, $include_pending) = @_;
+     return 1 if $__is_volume_in_use->($class, $config, $volid);
+diff --git a/src/test/Makefile b/src/test/Makefile
+index 91ae6ff..1331b5f 100644
+--- a/src/test/Makefile
++++ b/src/test/Makefile
+@@ -2,7 +2,7 @@ RUN_USERNS := lxc-usernsexec -m "u:0:`id -u`:1" -m "g:0:`id -g`:1" --
+ 
+ all: test
+ 
+-test: test_setup test_snapshot test_bindmount test_idmap
++test: test_setup test_snapshot test_snapshot_list test_bindmount test_idmap
+ 
+ test_setup: run_setup_tests.pl
+ 	if test -e /run/lock/sbuild; then \
+@@ -14,6 +14,9 @@ test_setup: run_setup_tests.pl
+ test_snapshot: run_snapshot_tests.pl
+ 	./run_snapshot_tests.pl
+ 
++test_snapshot_list: run_snapshot_list_tests.pl
++	./run_snapshot_list_tests.pl
++
+ test_bindmount: bindmount_test.pl
+ 	if test -e /run/lock/sbuild; then \
+ 		echo skipping userns tests in sbuild environment ; \
+diff --git a/src/test/run_snapshot_list_tests.pl b/src/test/run_snapshot_list_tests.pl
+new file mode 100755
+index 0000000..76e292c
+--- /dev/null
++++ b/src/test/run_snapshot_list_tests.pl
+@@ -0,0 +1,76 @@
++#!/usr/bin/perl
++
++# Tests for PVE::LXC::Config->snapshot_list_for_volume()
++
++use strict;
++use warnings;
++
++use lib qw(..);
++
++use Test::More tests => 5;
++
++use PVE::LXC::Config;
++
++my $conf = {
++    rootfs => 'local:103/subvol-103-disk-0.subvol',
++    snapshots => {
++        # deliberately unordered snaptimes; 'branched' shares snaptime
++        # ordering position via rollback history
++        newer => {
++            snaptime => 300,
++            rootfs => 'local:103/subvol-103-disk-0.subvol',
++            mp0 => 'other:103/subvol-103-disk-1.subvol,mp=/data',
++        },
++        oldest => {
++            snaptime => 100,
++            rootfs => 'local:103/subvol-103-disk-0.subvol',
++        },
++        middle => {
++            snaptime => 200,
++            rootfs => 'local:103/subvol-103-disk-0.subvol',
++        },
++        othervolume => {
++            snaptime => 250,
++            rootfs => 'local:103/subvol-103-disk-9.subvol',
++        },
++        novolume => {
++            snaptime => 260,
++        },
++        bindmount => {
++            snaptime => 270,
++            rootfs => 'local:103/subvol-103-disk-0.subvol',
++            mp0 => '/mnt/bindmount,mp=/mnt',
++        },
++    },
++};
++
++my @list = PVE::LXC::Config->snapshot_list_for_volume(
++    $conf, 'rootfs', 'local:103/subvol-103-disk-0.subvol',
++);
++is_deeply(
++    \@list,
++    ['oldest', 'middle', 'bindmount', 'newer'],
++    'snapshots referencing the volume, ordered by time',
++);
++
++@list = PVE::LXC::Config->snapshot_list_for_volume(
++    $conf, 'rootfs', 'local:103/subvol-103-disk-9.subvol',
++);
++is_deeply(\@list, ['othervolume'], 'other volume only matches its own snapshot');
++
++@list = PVE::LXC::Config->snapshot_list_for_volume(
++    $conf, 'mp0', 'other:103/subvol-103-disk-1.subvol',
++);
++is_deeply(\@list, ['newer'], 'mount point key is respected');
++
++@list = PVE::LXC::Config->snapshot_list_for_volume(
++    $conf, 'mp0', '/mnt/bindmount',
++);
++is_deeply(\@list, [], 'bind mounts are not volumes');
++
++@list = PVE::LXC::Config->snapshot_list_for_volume(
++    { rootfs => 'local:103/subvol-103-disk-0.subvol' },
++    'rootfs',
++    'local:103/subvol-103-disk-0.subvol',
++);
++is_deeply(\@list, [], 'config without snapshots yields empty list');
+-- 
+2.54.0
+

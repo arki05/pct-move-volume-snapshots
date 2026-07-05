@@ -7,7 +7,7 @@ replaying snapshots oldest-to-newest through Proxmox's own copy machinery.
 Storage-agnostic by construction — any source whose snapshots PVE can mount,
 any target that supports snapshots (zfs → bcachefs, btrfs → zfs, ...).
 
-**Status: design phase.** See [DESIGN.md](DESIGN.md).
+**Status: prototype complete and integration-tested** (lvmthin -> bcachefs and bcachefs -> bcachefs with 3-snapshot replay, content-verified via rollbacks; clean refusal on snapshot-incapable targets). See [DESIGN.md](DESIGN.md) and `patches/
 
 Sibling project of [pve-bcachefs](../pve-bcachefs/) (bcachefs storage plugin);
 its LXC.pm patch 2 (generic mounting of path-backed subvolume snapshots) is a
