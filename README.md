@@ -20,3 +20,16 @@ Today Proxmox refuses `pct move-volume` whenever snapshots exist, vzdump
 restore silently drops snapshot history, and the only snapshot-preserving
 paths are same-type node migrations (`zfs send`, `btrfs send`). There is no
 cross-storage-type story at all.
+
+## Workflow
+
+- `pve-container/` (git-ignored) is a clone of the upstream repo
+  (github.com/proxmox/pve-container mirror), branch
+  `move-volume-with-snapshots`, currently at 6.1.10 — identical to the
+  version deployed on both the lab VM and production.
+- Feature is developed as real commits on that branch, tests added to the
+  upstream harness (`src/test/run_snapshot_tests.pl`).
+- Testing: build the .deb from the branch, install in the pve-lab VM
+  (10.10.10.178), run the replay matrix from DESIGN.md.
+- Submission: `git format-patch` (kept in `patches/` for visibility) →
+  pve-devel RFC.
