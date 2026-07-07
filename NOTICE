@@ -1,0 +1,8 @@
+The patches in patches/ (and the commits on the move-volume-with-snapshots
+branch of the pve-container clone) are modifications of Proxmox VE's
+pve-container, which is licensed AGPL-3.0-or-later. As derivative works they
+are likewise AGPL-3.0-or-later. DESIGN.md and the wrapper scripts in this
+repository are original work under the same license.
+
+pve-container is not included in this repository (see .gitignore); clone it
+from https://github.com/proxmox/pve-container to apply the patch series.

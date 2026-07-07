@@ -33,3 +33,8 @@ cross-storage-type story at all.
   (10.10.10.178), run the replay matrix from DESIGN.md.
 - Submission: `git format-patch` (kept in `patches/` for visibility) →
   pve-devel RFC.
+
+## License
+
+AGPL-3.0-or-later (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). The patches are
+derivative works of Proxmox's AGPL-3.0+ pve-container.
