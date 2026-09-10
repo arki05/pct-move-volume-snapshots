@@ -1,1 +1,8 @@
 pve-container/
+debian/pct-move-volume-snapshots/
+debian/.debhelper/
+debian/files
+debian/debhelper-build-stamp
+*.deb
+*.buildinfo
+*.changes

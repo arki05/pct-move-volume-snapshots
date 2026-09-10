@@ -1,0 +1,9 @@
+pct-move-volume-snapshots (0.1.0) trixie; urgency=medium
+
+  * Initial packaged release of the prototype.
+  * Patch 1 (mounting snapshots of path-backed subvolumes) dropped in favour of
+    depending on pve-lxc-snapshot-mount, which owns that fix. It was never
+    specific to this feature - it repairs the same gap for btrfs generally -
+    and pve-bcachefs carried a duplicate of it too.
+
+ -- Julius Arkenberg <julius@rkenberg.de>  Thu, 10 Sep 2026 21:15:00 +0200

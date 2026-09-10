@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+APPLY=/usr/share/pct-move-volume-snapshots/apply-patches.sh
+
+case "$1" in
+    configure | triggered)
+        [ -x "$APPLY" ] || exit 0
+        # Not fatal: without the patches, move-volume behaves as stock Proxmox
+        # does - it simply refuses volumes with snapshots. Report it rather than
+        # leaving the package half-configured.
+        if ! "$APPLY"; then
+            echo "pct-move-volume-snapshots: patches not applied;" >&2
+            echo "  'pct move-volume --with-snapshots' is unavailable." >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

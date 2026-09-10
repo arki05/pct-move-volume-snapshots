@@ -1,0 +1,34 @@
+Source: pct-move-volume-snapshots
+Section: admin
+Priority: optional
+Maintainer: Julius Arkenberg <julius@rkenberg.de>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ patchutils,
+Standards-Version: 4.7.0
+Homepage: https://github.com/arki05/pct-move-volume-snapshots
+
+Package: pct-move-volume-snapshots
+Architecture: all
+Depends:
+ ${misc:Depends},
+ patch,
+ pve-container,
+ pve-lxc-snapshot-mount,
+Description: pct move-volume --with-snapshots for Proxmox VE
+ Proxmox refuses "pct move-volume" whenever a volume has snapshots, vzdump
+ restore drops snapshot history, and the only snapshot-preserving paths are
+ same-storage-type node migrations. There is no cross-storage-type story.
+ .
+ This adds a --with-snapshots option that moves a container volume to another
+ storage while preserving its snapshots, by replaying them oldest-to-newest
+ through Proxmox's own copy machinery. Storage-agnostic: any source whose
+ snapshots PVE can mount, any target that supports snapshots.
+ .
+ It also stops rsync copying filesystem-internal virtual xattrs, which
+ otherwise abort a copy off a bcachefs-backed storage onto any other
+ filesystem with EOPNOTSUPP.
+ .
+ Patches are applied all-or-nothing and re-applied after pve-container
+ upgrades. Intended as an upstream RFC, not a permanent out-of-tree patch.

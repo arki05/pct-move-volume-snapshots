@@ -1,0 +1,2 @@
+# pve-container upgrades rewrite the files we patch.
+interest-noawait /usr/share/perl5/PVE

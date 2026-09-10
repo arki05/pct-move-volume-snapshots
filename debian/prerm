@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+APPLY=/usr/share/pct-move-volume-snapshots/apply-patches.sh
+
+case "$1" in
+    remove | deconfigure)
+        [ -x "$APPLY" ] && "$APPLY" --revert || true
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
